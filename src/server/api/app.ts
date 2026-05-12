@@ -7,7 +7,6 @@ import type { ViteDevServer } from "vite";
 import { apiConfig } from "./config";
 import { requestId } from "./middleware/request-id";
 import { cspNonce, helmetMiddleware, siteCors } from "./middleware/security";
-import { apiRateLimit } from "./middleware/rate-limit";
 import { errorHandler, notFound } from "./middleware/error";
 import { v1Router } from "./routes/v1";
 import { loadHomeSSRData } from "./services/page-data";
@@ -33,7 +32,7 @@ interface SSRRenderer {
 export async function buildApp(): Promise<Express> {
   const app = express();
 
-  // Behind a reverse proxy we need this so req.ip and rate-limit keying work.
+  // Behind a reverse proxy we need this so req.ip resolves to the real client.
   if (apiConfig.TRUST_PROXY) app.set("trust proxy", 1);
   // Hide Express fingerprinting.
   app.disable("x-powered-by");
@@ -48,8 +47,9 @@ export async function buildApp(): Promise<Express> {
   app.use(helmetMiddleware());
   app.use(express.json({ limit: "16kb" }));
 
-  // Public API: locked-down CORS + rate limiting + read-only routes.
-  app.use("/api/v1", siteCors(), apiRateLimit(), v1Router());
+  // Internal API: same-origin CORS + read-only routes. The API is not a
+  // public consumer surface; it exists to serve HantaTrack's own front-end.
+  app.use("/api/v1", siteCors(), v1Router());
   // 404 for anything else under /api (other API versions etc.).
   app.use("/api", notFound);
 

@@ -1,3 +1,9 @@
+/* Leaflet base styles. Imported here so our overrides further down in this
+   file appear AFTER leaflet's rules in the final bundle — without this the
+   JS-side import in entry-client.tsx loaded leaflet.css after tailwind.css,
+   making popup/tooltip dark-mode overrides lose source-order battles. */
+@import "leaflet/dist/leaflet.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

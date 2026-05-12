@@ -16,8 +16,6 @@ const schema = z.object({
   CORS_ALLOWED_ORIGINS: z
     .string()
     .default("http://localhost:5173,http://localhost:5174,http://localhost:5175"),
-  // Per-IP requests per minute on the public API.
-  RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(60),
   // Whether to honor X-Forwarded-* headers. Only enable behind a known proxy.
   TRUST_PROXY: z
     .union([z.literal("true"), z.literal("false")])
@@ -25,6 +23,9 @@ const schema = z.object({
     .transform((v) => v === "true"),
   // Where the scraper writes its output; the case-store reads from this path.
   SCRAPER_OUTPUT_PATH: z.string().default("data/cases.geojson"),
+  // SSE heartbeat cadence on /api/v1/updates. A comment line is written this
+  // often to keep idle-proxy timeouts (usually 30-60s) from closing the stream.
+  SSE_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(25000),
 });
 
 // Parse `process.env` once at import time. Throws if validation fails.

@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { LocationAggregate } from "../../shared/case-aggregate";
 import type { NewsArticle } from "../../shared/news";
+import { LIVE_UPDATE_EVENT_DATA_UPDATED } from "../../shared/live-updates";
 import { fetchLocationAggregates, type LocationsResult } from "../../lib/case-data";
 import { fetchNews } from "../../lib/news-data";
 import { formatDateTime } from "../../lib/format-cases";
 import { useSSRData } from "../../lib/ssr-context";
+import { useLiveUpdates } from "../../lib/use-live-updates";
 import { WorldCaseMap } from "../../components/map/world-case-map";
 import { MapHeader } from "../../components/map/map-header";
 import { MapLegend } from "../../components/map/map-legend";
@@ -28,6 +30,11 @@ export function HomePage() {
   // values are guaranteed fresh because they were read from the same
   // case-store cache the API uses.
   const skipInitialFetch = useRef(!!ssr);
+
+  // Tracks an in-flight refetch triggered by an SSE `data-updated` event so
+  // back-to-back pushes coalesce: a new push aborts the previous fetch and
+  // starts a fresh one, matching the abort pattern used in the mount effect.
+  const liveRefetchController = useRef<AbortController | null>(null);
 
   useEffect(() => {
     // Bail on the first effect run if SSR already populated state.
@@ -57,6 +64,40 @@ export function HomePage() {
       .finally(() => setLoading(false));
 
     return () => controller.abort();
+  }, []);
+
+  // Stable handler reference for the SSE subscription. Ignores `hello` (SSR
+  // is already the freshest source on first paint, so refetching there would
+  // be a wasted round-trip) and refetches aggregates on every `data-updated`.
+  // Errors are swallowed silently per the silent-UX decision — the previous
+  // map stays on screen until the next successful refetch.
+  const handleLiveUpdate = useCallback((_evt: unknown, name: string) => {
+    if (name !== LIVE_UPDATE_EVENT_DATA_UPDATED) return;
+
+    // Abort any prior refetch so only the newest event wins.
+    liveRefetchController.current?.abort();
+    const controller = new AbortController();
+    liveRefetchController.current = controller;
+
+    fetchLocationAggregates({ signal: controller.signal })
+      .then((r) => {
+        setLocations(r.locations);
+        setMeta(r.meta);
+      })
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        // Silent UX — log to the console for devs, leave the visible UI alone.
+        if (typeof console !== "undefined") {
+          console.warn("live update refetch failed:", err);
+        }
+      });
+  }, []);
+
+  useLiveUpdates({ onUpdate: handleLiveUpdate });
+
+  // Cancel any in-flight live refetch on unmount.
+  useEffect(() => {
+    return () => liveRefetchController.current?.abort();
   }, []);
 
   // Pre-format the "Updated …" timestamp on the server when possible to keep

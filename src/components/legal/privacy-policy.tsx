@@ -9,13 +9,15 @@ export function PrivacyPolicyContent() {
       <p className="text-xs text-fg-muted">Last updated: {LAST_UPDATED}</p>
 
       <Section title="What we collect">
-        <ul className="ml-5 list-disc space-y-1">
-          <li>
-            <strong>IP addresses</strong>, used for security logging and per-IP rate limiting on
-            our API endpoints. Retained no longer than 30 days.
-          </li>
-        </ul>
-        <p>That is the only personal data we process.</p>
+        <p>
+          <strong>Nothing personal.</strong> HantaTrack does not collect, log, or store any
+          personal data about visitors — no IP addresses, no identifiers, no profiles.
+        </p>
+        <p>
+          Like any web service, our server sees the IP address of incoming connections at the
+          network layer so it can return a response. It is never written to logs, never
+          persisted, and never associated with any other data.
+        </p>
       </Section>
 
       <Section title="What we do not do">
@@ -23,6 +25,7 @@ export function PrivacyPolicyContent() {
           <li>We do not set cookies.</li>
           <li>We do not run analytics or telemetry.</li>
           <li>We do not have user accounts, sign-ups, or sign-ins.</li>
+          <li>We do not log or retain IP addresses.</li>
           <li>We do not sell, rent, or share any data.</li>
           <li>We do not embed third-party advertising or tracking scripts.</li>
         </ul>
@@ -52,18 +55,6 @@ export function PrivacyPolicyContent() {
             <strong>Google News RSS</strong> — to populate the news ticker.
           </li>
         </ul>
-      </Section>
-
-      <Section title="Your rights">
-        <p>
-          If you are in the EU, UK, or California, you have the right to access, correct, or
-          delete personal data we hold about you. Since the only personal data we hold is
-          short-lived IP logs, a deletion request is typically satisfied within hours. Email{" "}
-          <a className="text-brand-400 hover:underline" href="mailto:hantatrack@pathvoid.com">
-            hantatrack@pathvoid.com
-          </a>
-          .
-        </p>
       </Section>
 
       <Section title="Changes">

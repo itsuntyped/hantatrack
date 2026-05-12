@@ -1,9 +1,9 @@
 import { StrictMode } from "react";
 import { hydrateRoot } from "react-dom/client";
-import "leaflet/dist/leaflet.css";
 // Tailwind is loaded via a blocking <link> in index.html so the SSR HTML
 // paints fully-styled on first frame — importing it here would push the CSS
-// behind the JS bundle and cause a FOUC.
+// behind the JS bundle and cause a FOUC. leaflet.css is `@import`-ed at the
+// top of tailwind.css so the two stay in the right order in one bundle.
 import App from "./App";
 import { SSRDataProvider, readSSRDataFromWindow } from "./lib/ssr-context";
 

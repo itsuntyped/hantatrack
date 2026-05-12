@@ -107,3 +107,19 @@ export async function getMetadata(): Promise<{
     loadedAt: entry.loadedAt,
   };
 }
+
+// Force a cache refresh and return the freshness fields.
+// Called by the case-watcher the moment fs.watch fires on data/cases.geojson,
+// so that subscribers' subsequent /summary requests hit a cache that already
+// reflects the new mtime. loadIfStale() is the existing mtime-keyed reader —
+// no extra invalidation flag needed; we just call through.
+export async function refreshNow(): Promise<{
+  generatedAt: string | null;
+  totalCases: number;
+}> {
+  const entry = await loadIfStale();
+  return {
+    generatedAt: entry.generatedAt,
+    totalCases: entry.cases.length,
+  };
+}

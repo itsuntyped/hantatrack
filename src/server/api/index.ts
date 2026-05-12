@@ -2,6 +2,8 @@ import { apiConfig } from "./config";
 import { buildApp } from "./app";
 import { createLogger } from "../scraper/logger";
 import { startScraperLoop, type ScraperLoopHandle } from "../scraper/loop";
+import { startCaseWatcher, type CaseWatcherHandle } from "./services/case-watcher";
+import * as caseEvents from "./services/case-events";
 
 // Production-style server entry point.
 // Builds the Express app, starts the HTTP listener, kicks off the scraper
@@ -11,6 +13,8 @@ const log = createLogger("api");
 
 // Handle to the scraper loop so we can stop it on shutdown.
 let scraperLoop: ScraperLoopHandle | null = null;
+// Handle to the data-file watcher that drives SSE notifications.
+let caseWatcher: CaseWatcherHandle | null = null;
 
 // Top-level await is OK here — Node ESM supports it and we don't need to
 // listen until the app is fully wired.
@@ -22,6 +26,9 @@ const server = app.listen(apiConfig.PORT, () => {
 // Start the in-process hourly scraper loop. In environments where the scraper
 // runs as a separate worker, set SCRAPER_LOOP_DISABLED to skip this.
 scraperLoop = startScraperLoop();
+// Start the case-data file watcher. Emits in-process events that the SSE
+// /api/v1/updates route forwards to connected clients.
+caseWatcher = startCaseWatcher();
 
 // Guard so SIGINT + SIGTERM arriving back-to-back don't re-enter shutdown.
 let shuttingDown = false;
@@ -30,6 +37,10 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   log.info(`Received ${signal}, shutting down…`);
   scraperLoop?.stop();
+  caseWatcher?.stop();
+  // Drop SSE subscribers so the EventEmitter doesn't hold references that
+  // keep the process alive.
+  caseEvents.removeAllListeners();
   server.close((err) => {
     if (err) {
       log.error(`Error during shutdown: ${err.message}`);

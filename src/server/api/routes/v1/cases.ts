@@ -6,7 +6,7 @@ import type { Case } from "../../../../shared/case";
 import { VALID_STATUSES } from "../../../../shared/case";
 
 // GET /api/v1/cases — paginated list of individual cases with optional filters.
-// Public, read-only, rate-limited by the apiRateLimit middleware mounted on /api/v1.
+// Internal-only, read-only — same-origin CORS via siteCors() on /api/v1.
 
 // Query parameter schema. Filters are optional; pagination has safe defaults.
 // `since`/`until` enforce YYYY-MM-DD to keep date string comparisons stable.
