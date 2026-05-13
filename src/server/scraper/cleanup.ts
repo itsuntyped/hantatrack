@@ -2,12 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { config } from "./config";
 import { createLogger } from "./logger";
-import {
-  CONTINENT_TERMS,
-  GENERIC_TERMS,
-  MIN_NOTES_LENGTH,
-  WATER_TERMS,
-} from "./ai/plausibility";
+import { inspectPersistedRow } from "./ai/plausibility";
 
 // Offline cleanup.
 //
@@ -25,12 +20,6 @@ import {
 // environment whose dataset pre-dates that change.
 
 const log = createLogger("scraper.cleanup");
-
-// Sources whose rows pass through the AI extractor and are therefore subject
-// to hallucination risk. Other sources (e.g. the ArcGIS / ANDV_Dashboard
-// structured feed) deliver coords and labels we trust, even when the label
-// is unhelpful — those rows must NOT be re-validated here.
-const AI_USING_SOURCES = new Set(["WHO", "CDC", "ECDC", "HealthMap", "GDELT"]);
 
 // GeoJSON shapes — kept local to avoid pulling in the runtime serializer's
 // types, which would couple this script to its read/write helpers.
@@ -70,50 +59,21 @@ interface Verdict {
   reasons: string[];
 }
 
-// Apply plausibility rules to a persisted feature. Stricter than the live
-// AI filter on one point: water-term names without a comma are rejected
-// even when the row has coordinates, because for persisted rows we can no
-// longer tell whether those coords came from the source or from a bad
-// forward-geocode.
+// Apply plausibility rules to a persisted feature. Thin adapter around
+// `inspectPersistedRow` (the shared inspector in ai/plausibility.ts) — keeping
+// the rule logic in one place means the live post-merge filter and this
+// offline script can never drift apart.
 function inspect(f: GeoJsonFeature): Verdict {
   const p = f.properties;
-
-  // Skip non-AI sources unconditionally.
-  if (!AI_USING_SOURCES.has(p.source)) return { keep: true, reasons: [] };
-
-  const reasons: string[] = [];
-
-  const name = (p.location_name ?? "").trim();
-  const lower = name.toLowerCase();
-  if (name.length < 2) {
-    reasons.push("location_name: empty/too short");
-  } else if (GENERIC_TERMS.includes(lower)) {
-    reasons.push(`location_name: generic placeholder ("${name}")`);
-  } else if (CONTINENT_TERMS.includes(lower)) {
-    reasons.push(`location_name: continent-level ("${name}")`);
-  } else {
-    const hasWater = WATER_TERMS.some(
-      (t) =>
-        lower === t ||
-        lower.startsWith(`${t} `) ||
-        lower.endsWith(` ${t}`) ||
-        lower.includes(` ${t} `),
-    );
-    if (hasWater && !name.includes(",")) {
-      reasons.push(`location_name: body of water without anchor ("${name}")`);
-    }
-  }
-
-  const notes = (p.notes ?? "").trim();
-  if (notes.length === 0) {
-    reasons.push("notes: missing");
-  } else if (notes.toLowerCase() === p.source.toLowerCase()) {
-    reasons.push(`notes: just the source name ("${notes}")`);
-  } else if (notes.length < MIN_NOTES_LENGTH) {
-    reasons.push(`notes: too short (${notes.length} chars)`);
-  }
-
-  return { keep: reasons.length === 0, reasons };
+  const issues = inspectPersistedRow({
+    source: p.source,
+    locationName: p.location_name,
+    notes: p.notes,
+  });
+  return {
+    keep: issues.length === 0,
+    reasons: issues.map((i) => `${i.field}: ${i.message}`),
+  };
 }
 
 // Result handed back to the CLI for human-readable logging.

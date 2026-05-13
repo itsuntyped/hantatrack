@@ -8,6 +8,7 @@ import { mergeWithExisting } from "./deduplicator";
 import { readExistingCases, writeGeoJson } from "./serializer";
 import { reverseGeocodePoints } from "./reverse-geocoder";
 import { runNewsScrape } from "./news";
+import { inspectPersistedRow } from "./ai/plausibility";
 import type { Case, SourceRunStats } from "../../shared/case";
 
 // Scrape orchestrator. Runs every source in parallel, validates + dedups the
@@ -82,12 +83,46 @@ export async function runScrape(): Promise<ScrapeRunResult> {
     `merged: ${merged.length} total (existing ${existing.length}, new valid ${valid.length}, invalid ${invalid})`,
   );
 
-  await writeGeoJson(merged, sourceStats, outputPath);
+  // Post-merge safety net.
+  // The live AI plausibility filter runs at extraction time on fresh rows.
+  // This second pass re-validates the *entire* merged dataset (new + historical
+  // rows carried over from disk) against the same persisted-row rules the
+  // cleanup CLI uses. It catches two failure modes the extraction-time filter
+  // cannot:
+  //   1. Rows that landed in cases.geojson before the live filter existed.
+  //   2. Rows produced by a future code path that bypasses the live filter.
+  // Tightening this filter automatically heals prod on the next tick — no
+  // separate cleanup invocation needed.
+  const clean: Case[] = [];
+  let postMergeDropped = 0;
+  for (const c of merged) {
+    const issues = inspectPersistedRow({
+      source: c.source,
+      locationName: c.locationName,
+      notes: c.notes,
+    });
+    if (issues.length === 0) {
+      clean.push(c);
+    } else {
+      postMergeDropped++;
+      log.warn(
+        `post-merge DROP ${c.caseId.slice(0, 12)} (${c.source} "${c.locationName}"): ${issues
+          .map((i) => `${i.field}: ${i.message}`)
+          .join("; ")}`,
+      );
+    }
+  }
+  if (postMergeDropped > 0) {
+    log.warn(`post-merge filter removed ${postMergeDropped} implausible rows`);
+  }
+
+  await writeGeoJson(clean, sourceStats, outputPath);
 
   // Reverse-geocode any new (lat,lng) pairs so the API can label them
   // as "City, Region, Country" instead of the source's bland "CANADA"/"USA".
   // Results are cached on disk; only new points incur a Nominatim request.
-  await reverseGeocodePoints(merged.map((c) => ({ lat: c.latitude, lng: c.longitude })));
+  // Run over the cleaned set so we never cache geocoding for a dropped row.
+  await reverseGeocodePoints(clean.map((c) => ({ lat: c.latitude, lng: c.longitude })));
 
   // News ticker — pull recent hantavirus headlines from Google News RSS.
   // Failures here don't fail the run; the front-end will fall back to "no news".
@@ -98,10 +133,10 @@ export async function runScrape(): Promise<ScrapeRunResult> {
   }
 
   const durationMs = Date.now() - start;
-  log.info(`=== scrape done in ${durationMs}ms — ${merged.length} cases written ===`);
+  log.info(`=== scrape done in ${durationMs}ms — ${clean.length} cases written ===`);
 
   return {
-    total: merged.length,
+    total: clean.length,
     newValid: valid.length,
     invalid,
     durationMs,

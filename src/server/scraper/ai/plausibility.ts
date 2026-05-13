@@ -1,6 +1,15 @@
 import { createLogger } from "../logger";
 import type { AiExtractedCase } from "./extract-cases";
 
+// Source IDs whose rows pass through the AI extractor and are therefore
+// subject to hallucination risk. Other sources (today: ANDV_Dashboard via
+// the ArcGIS Feature Service) deliver coords and labels we trust — those
+// rows must NOT be re-validated against AI-hallucination rules, even when
+// their `location_name` is unhelpful (e.g. "UNKNOWN").
+// Kept here so both the live extractor and the offline cleanup agree on
+// which sources to police.
+export const AI_USING_SOURCES = new Set<string>(["WHO", "CDC", "ECDC", "HealthMap", "GDELT"]);
+
 // AI hallucination guardrails.
 // LangChain's structured-output mode guarantees the *shape* of the model
 // response — it does not guarantee the *content*. The model can (and has)
@@ -118,6 +127,70 @@ export function inspectAiCase(c: AiExtractedCase, sourceId: string): Plausibilit
   if (notes.length === 0) {
     issues.push({ field: "notes", message: "missing — prompt requires source citation" });
   } else if (notes.toLowerCase() === sourceId.toLowerCase()) {
+    issues.push({
+      field: "notes",
+      message: `is just the source name ("${notes}") — no citation`,
+    });
+  } else if (notes.length < MIN_NOTES_LENGTH) {
+    issues.push({
+      field: "notes",
+      message: `too short (${notes.length} chars) — likely uncited`,
+    });
+  }
+
+  return issues;
+}
+
+// Inspect a *persisted* row — i.e. a record already written to disk, whose
+// coordinates may have come from a forward-geocode rather than the source.
+// Stricter than `inspectAiCase` on one point: water-term names without a
+// comma are rejected regardless of coords, because for stored rows we can
+// no longer tell whether the lat/lng came from the source itself or from a
+// bad geocoder lookup.
+//
+// Returns an empty array for non-AI sources (ArcGIS / ANDV_Dashboard) — we
+// never want to second-guess machine-readable feeds whose labels are merely
+// unhelpful (`"UNKNOWN"`) rather than fabricated.
+export function inspectPersistedRow(row: {
+  source: string;
+  locationName: string;
+  notes: string;
+}): PlausibilityIssue[] {
+  if (!AI_USING_SOURCES.has(row.source)) return [];
+
+  const issues: PlausibilityIssue[] = [];
+
+  const name = (row.locationName ?? "").trim();
+  const lower = name.toLowerCase();
+  if (name.length < 2) {
+    issues.push({ field: "location_name", message: "empty or too short" });
+  } else if (GENERIC_TERMS.includes(lower)) {
+    issues.push({ field: "location_name", message: `generic placeholder ("${name}")` });
+  } else if (CONTINENT_TERMS.includes(lower)) {
+    issues.push({
+      field: "location_name",
+      message: `continent-level, not country/city ("${name}")`,
+    });
+  } else {
+    const hasWater = WATER_TERMS.some(
+      (t) =>
+        lower === t ||
+        lower.startsWith(`${t} `) ||
+        lower.endsWith(` ${t}`) ||
+        lower.includes(` ${t} `),
+    );
+    if (hasWater && !name.includes(",")) {
+      issues.push({
+        field: "location_name",
+        message: `body of water without anchor ("${name}")`,
+      });
+    }
+  }
+
+  const notes = (row.notes ?? "").trim();
+  if (notes.length === 0) {
+    issues.push({ field: "notes", message: "missing — prompt requires source citation" });
+  } else if (notes.toLowerCase() === row.source.toLowerCase()) {
     issues.push({
       field: "notes",
       message: `is just the source name ("${notes}") — no citation`,
