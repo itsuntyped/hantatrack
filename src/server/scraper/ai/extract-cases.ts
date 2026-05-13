@@ -4,6 +4,7 @@ import { config } from "../config";
 import { createLogger } from "../logger";
 import type { RawCaseInput } from "../parser";
 import { VALID_STATUSES } from "../../../shared/case";
+import { filterAiCases } from "./plausibility";
 
 // AI extraction. Public-health bulletins are written in prose, not tables —
 // we use a structured-output LLM call (via LangChain) to lift case rows out
@@ -34,20 +35,22 @@ const aiResponseSchema = z.object({
 
 export type AiExtractedCase = z.infer<typeof aiCaseSchema>;
 
-// System prompt. Wrote it as bullet rules so the model can refer back to a
-// specific rule on each emit decision.
+// System prompt. Bullet rules so the model can point at a specific rule on
+// every emit decision. The rules are also enforced by `filterAiCases` after
+// the call — the model is asked to refuse, and the code refuses too, so a
+// drifty model still cannot inject bad rows.
 const PROMPT = [
   "You extract structured hantavirus case data from public health reports and news articles.",
   "",
-  "Rules:",
-  "- Only emit cases that the source explicitly describes — do not invent or infer counts.",
-  "- One entry per distinct location AND status — combine multiple identical cases at the same place/status into a single entry and mention the count in `notes`.",
-  "- `status` must be one of: Confirmed, Probable, Suspected, Deceased, Monitoring.",
-  "- `date_reported` is the date the report itself is dated (ISO 8601, YYYY-MM-DD). If only a year/month, use the first day.",
-  "- `location_name` should be specific enough to geocode (city + country, or country alone).",
-  "- Latitude/longitude are optional — only include them when the source states explicit coordinates. Leave undefined otherwise; downstream code will resolve coordinates from the location name.",
-  "- `notes` should include the source citation (e.g. 'WHO DON 2026-DON600') when available.",
-  "- If the text contains no hantavirus cases at all, return an empty `cases` array.",
+  "Strict rules — violations cause the case to be discarded downstream:",
+  "- ONLY emit cases that the source text explicitly describes. Never invent, infer, or expand counts. If unsure, omit.",
+  "- One entry per distinct (location, status) pair. Combine identical cases at the same place and status into one entry and mention the count in `notes`.",
+  "- `status` must be exactly one of: Confirmed, Probable, Suspected, Deceased, Monitoring.",
+  "- `date_reported` is the date the source itself dates the case (ISO 8601, YYYY-MM-DD). Use the first day of the month/year if only that is given.",
+  "- `location_name` MUST be specific enough to geocode unambiguously. Use 'City, Country' or 'Region, Country'. A standalone country or well-known territory name is acceptable. NEVER use an ocean, sea, gulf, bay, strait, continent, hemisphere, or compass direction (e.g. 'South Atlantic', 'Caribbean', 'Europe') as the location_name.",
+  "- Latitude/longitude: ONLY include them when the source itself states explicit numeric coordinates for that case. Leave them null otherwise — downstream geocoding will resolve them from `location_name`.",
+  "- `notes` MUST contain a concrete source citation (bulletin id, headline, paragraph reference, or organization+date) AND any extra context the source provides. A notes value that is just the source name, empty, or under ~15 characters is invalid — OMIT the case entirely rather than emit one with weak notes.",
+  "- If the text contains no hantavirus cases at all, return an empty `cases` array. An empty array is always a valid response.",
 ].join("\n");
 
 export interface ExtractContext {
@@ -107,7 +110,11 @@ export async function extractCasesFromText(
     ]);
 
     log.info(`[${ctx.sourceName}] AI extracted ${response.cases.length} candidate cases.`);
-    return response.cases.map((c) => ({
+    // Plausibility filter. Drops rows that fail the prompt's own rules
+    // (vague location, missing citation, etc.) — the model occasionally
+    // returns well-formed but hallucinated cases despite the rules.
+    const plausible = filterAiCases(response.cases, ctx.sourceName);
+    return plausible.map((c) => ({
       location_name: c.location_name,
       status: c.status,
       date_reported: c.date_reported,

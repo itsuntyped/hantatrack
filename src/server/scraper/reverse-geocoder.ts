@@ -245,16 +245,115 @@ export function lookupGeocode(cache: CacheFile, lat: number, lng: number): GeoLa
 
 // ─── Forward: "Rimouski, Quebec" → (lat, lng) ─────────────────────────
 
-// Subset of Nominatim's /search response we use.
+// Subset of Nominatim's /search response we use. `class`, `type`, and
+// `importance` are needed by the hit-acceptance filter below.
 interface NominatimSearchResult {
   lat?: string;
   lon?: string;
   display_name?: string;
+  class?: string;
+  type?: string;
+  addresstype?: string;
+  importance?: number;
 }
 
-// Fetch + shape the top hit. Returns null when Nominatim has no match.
+// Place "class" values from Nominatim that we never accept as a case location.
+// These are water/natural features that masquerade as a place when the input
+// string is something like "South Atlantic" or "Bay of Bengal".
+const FORBIDDEN_CLASSES = new Set(["natural", "waterway", "water"]);
+// Within class="boundary", reject sub-types that describe maritime boundaries.
+const FORBIDDEN_BOUNDARY_TYPES = new Set(["maritime"]);
+// Within class="place", reject place types that are bodies of water.
+const FORBIDDEN_PLACE_TYPES = new Set(["ocean", "sea", "bay", "strait", "water"]);
+// Nominatim importance score floor. Empirically: countries are ~0.7-0.9,
+// large cities ~0.5-0.7, smaller towns ~0.3-0.5. Below ~0.2 we get obscure
+// matches that are almost always wrong.
+const MIN_IMPORTANCE = 0.2;
+
+// Stopwords + compass directions to ignore when checking whether the query
+// and the matched place name share any meaningful tokens. Directions are
+// removed because they're the most common false-overlap culprit: a query
+// like "South Atlantic" trivially shares "south" with "South Caribbean
+// Coast, Nicaragua" even though the places have nothing to do with each
+// other.
+const TOKEN_STOPWORDS = new Set([
+  "of",
+  "the",
+  "and",
+  "in",
+  "on",
+  "at",
+  "to",
+  "for",
+  "north",
+  "south",
+  "east",
+  "west",
+  "northern",
+  "southern",
+  "eastern",
+  "western",
+  "central",
+  "upper",
+  "lower",
+  "new",
+]);
+
+// Tokenize: lowercase, strip non-alphanumerics, drop short tokens + stopwords.
+function meaningfulTokens(s: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of s.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length < 3) continue;
+    if (TOKEN_STOPWORDS.has(raw)) continue;
+    out.add(raw);
+  }
+  return out;
+}
+
+// Require at least one meaningful token from the query to appear in the matched
+// place's display_name. Guards against "South Atlantic" → "South Caribbean
+// Coast, Nicaragua" where the only shared token is a compass direction.
+function shareMeaningfulToken(query: string, displayName: string | undefined): boolean {
+  if (!displayName) return false;
+  const q = meaningfulTokens(query);
+  if (q.size === 0) return false;
+  const d = meaningfulTokens(displayName);
+  for (const t of q) if (d.has(t)) return true;
+  return false;
+}
+
+// Decide whether a single Nominatim hit is acceptable as a case location.
+// Returns either `{ ok: true }` or a reason string for logging.
+function isAcceptableHit(
+  hit: NominatimSearchResult,
+): { ok: true } | { ok: false; reason: string } {
+  const cls = hit.class ?? "";
+  const type = hit.type ?? "";
+  const importance = typeof hit.importance === "number" ? hit.importance : 0;
+
+  if (FORBIDDEN_CLASSES.has(cls)) {
+    return { ok: false, reason: `class="${cls}" is a water/natural feature` };
+  }
+  if (cls === "boundary" && FORBIDDEN_BOUNDARY_TYPES.has(type)) {
+    return { ok: false, reason: `class="boundary" type="${type}" is maritime` };
+  }
+  if (cls === "place" && FORBIDDEN_PLACE_TYPES.has(type)) {
+    return { ok: false, reason: `class="place" type="${type}" is a body of water` };
+  }
+  if (importance > 0 && importance < MIN_IMPORTANCE) {
+    return {
+      ok: false,
+      reason: `importance ${importance.toFixed(3)} below ${MIN_IMPORTANCE}`,
+    };
+  }
+  return { ok: true };
+}
+
+// Fetch + shape the top hit. Returns null when Nominatim has no usable match.
+// We ask for limit=5 so that the top result being rejected doesn't immediately
+// give up — we walk down the list looking for a non-water, non-obscure place.
 async function fetchForward(text: string): Promise<GeoCoord | null> {
-  const url = `${NOMINATIM_BASE}/search?q=${encodeURIComponent(text)}&format=jsonv2&limit=1&accept-language=en`;
+  const url = `${NOMINATIM_BASE}/search?q=${encodeURIComponent(text)}&format=jsonv2&limit=5&accept-language=en`;
   try {
     const res = await fetch(url, {
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
@@ -264,18 +363,43 @@ async function fetchForward(text: string): Promise<GeoCoord | null> {
       return null;
     }
     const body = (await res.json()) as NominatimSearchResult[];
-    const top = body[0];
-    if (!top || !top.lat || !top.lon) return null;
-    const lat = Number.parseFloat(top.lat);
-    const lng = Number.parseFloat(top.lon);
-    // Reject malformed responses defensively.
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-    return {
-      lat,
-      lng,
-      displayName: top.display_name,
-      fetchedAt: new Date().toISOString(),
-    };
+    if (!Array.isArray(body) || body.length === 0) return null;
+
+    // Walk the candidate list, picking the first hit that passes every filter.
+    // Logging the rejections is intentional — it gives a paper trail when
+    // a place legitimately fails to geocode.
+    for (const hit of body) {
+      if (!hit.lat || !hit.lon) continue;
+      const lat = Number.parseFloat(hit.lat);
+      const lng = Number.parseFloat(hit.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      const verdict = isAcceptableHit(hit);
+      if (!verdict.ok) {
+        log.warn(
+          `forward-geocode: rejecting hit for ${JSON.stringify(text)} (${hit.display_name ?? "no display_name"}): ${verdict.reason}`,
+        );
+        continue;
+      }
+      // Token-overlap check: refuse hits whose display_name shares no
+      // meaningful word with the query string. This is what catches the
+      // "South Atlantic" → "South Caribbean Coast, Nicaragua" failure mode,
+      // where Nominatim's match relies on a deprecated regional alias.
+      if (!shareMeaningfulToken(text, hit.display_name)) {
+        log.warn(
+          `forward-geocode: rejecting hit for ${JSON.stringify(text)} (${hit.display_name ?? "no display_name"}): no meaningful token overlap with query`,
+        );
+        continue;
+      }
+      return {
+        lat,
+        lng,
+        displayName: hit.display_name,
+        fetchedAt: new Date().toISOString(),
+      };
+    }
+    // All candidates were rejected.
+    log.warn(`forward-geocode: no acceptable hits for ${JSON.stringify(text)}`);
+    return null;
   } catch (err) {
     log.warn(
       `Nominatim search fetch failed for ${JSON.stringify(text)}: ${err instanceof Error ? err.message : String(err)}`,
