@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "scraper": "tsx src/server/scraper/cli.ts",
+    "scraper:cleanup": "tsx src/server/scraper/cleanup-cli.ts",
     "scraper:worker": "tsx src/server/scraper/worker.ts",
     "start": "cross-env NODE_ENV=production tsx src/server/api/index.ts",
     "server": "tsx src/server/api/index.ts",

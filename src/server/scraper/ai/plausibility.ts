@@ -18,7 +18,8 @@ const log = createLogger("scraper.ai.plausibility");
 // features that the model has been observed to emit as a "place". We allow
 // them only when the name is qualified with a comma (e.g. "Atlantic City,
 // USA") or when the source itself stated explicit coordinates.
-const WATER_TERMS = [
+// Exported so the offline cleanup script can apply the same vocabulary.
+export const WATER_TERMS = [
   "atlantic",
   "pacific",
   "arctic",
@@ -37,7 +38,7 @@ const WATER_TERMS = [
 ];
 
 // Continent / mega-region words that are not specific enough to geocode.
-const CONTINENT_TERMS = [
+export const CONTINENT_TERMS = [
   "africa",
   "asia",
   "europe",
@@ -50,7 +51,7 @@ const CONTINENT_TERMS = [
 ];
 
 // Generic placeholders the model sometimes invents when it has no real place.
-const GENERIC_TERMS = [
+export const GENERIC_TERMS = [
   "unknown",
   "n/a",
   "na",
@@ -67,7 +68,7 @@ const GENERIC_TERMS = [
 // include a citation (bulletin id, headline, etc.). A notes field that is
 // empty, equal to the source name, or otherwise sub-threshold is the single
 // strongest signal of a hallucinated row we've observed in production.
-const MIN_NOTES_LENGTH = 15;
+export const MIN_NOTES_LENGTH = 15;
 
 // One reason a candidate row failed plausibility, used purely for logging.
 export interface PlausibilityIssue {
